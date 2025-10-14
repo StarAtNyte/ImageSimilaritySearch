@@ -1,170 +1,170 @@
-# Image Search API
+# Image Similarity Search
 
-Flask API for similar image search using pre-computed embeddings and FAISS index.
+This project provides a set of tools to perform image similarity searches. It uses a pre-trained MobileNetV3 model to generate embeddings for images and Faiss for efficient similarity searching. The project includes scripts for generating embeddings, a command-line interface (CLI) for searching, and a Flask-based web API to expose the search functionality.
 
-## Setup
+## Features
 
-1. Install dependencies:
-```bash
-pip install -r requirements.txt
+- **Embedding Generation**: Traverses a directory of images and generates vector embeddings.
+- **Similarity Search**: Finds the most similar images to a given query image.
+- **Command-Line Interface**: A CLI to perform searches directly from the terminal.
+- **REST API**: A Flask server that exposes the search functionality through a simple API.
+- **Configurable**: Easily configure image directories, embedding storage, and search parameters.
+
+## Project Structure
+
+```
+ImageSearch/
+│
+├── .gitignore
+├── app.py                   # Flask web application with API endpoints
+├── generate_embeddings.py   # Script to generate image embeddings
+├── search_similar_images.py # CLI tool for performing similarity searches
+├── requirements.txt         # Python dependencies
+├── README.md                # This file
+│
+├── AOF/                     # Directory containing the image collection
+│   └── ...
+│
+├── my_embeddings/           # Directory where embeddings and index are stored
+│   ├── embeddings.npy
+│   ├── faiss_index.bin
+│   ├── index_info.json
+│   └── metadata.json
+│
+├── results/                 # Default directory for saved search results (if modified to save)
+│   └── ...
+│
+└── uploads/                 # Temporary storage for images uploaded to the API
 ```
 
-2. Ensure you have generated embeddings:
+## Installation
+
+1.  **Clone the repository:**
+    ```bash
+    git clone <repository-url>
+    cd ImageSearch
+    ```
+
+2.  **Create a virtual environment (recommended):**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+    ```
+
+3.  **Install the dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+## Usage
+
+There are three main parts to this project: generating embeddings, running the API server, and using the CLI for searches.
+
+### 1. Generate Embeddings
+
+Before you can search for similar images, you need to generate embeddings for your image collection.
+
 ```bash
-python generate_embeddings.py --input_dir AOF --output_dir my_embeddings
+python generate_embeddings.py --images_dir AOF --embeddings_dir my_embeddings
 ```
 
-3. For searching similar images using script:
-```bash
-python search_similar_images.py --query_image image.jpg --embeddings_dir my_embeddings
-```
+- `--images_dir`: The path to the directory containing your images (e.g., `AOF`).
+- `--embeddings_dir`: The path to the directory where the generated embeddings and index will be saved (e.g., `my_embeddings`).
 
-4. Run the API:
+This process will create the `my_embeddings` directory (if it doesn't exist) and save the `faiss_index.bin`, `metadata.json`, and other necessary files.
+
+### 2. Run the Web API
+
+To start the Flask server and use the REST API, run the following command:
+
 ```bash
 python app.py
 ```
 
-The API will be available at `http://localhost:5000`
+The server will start on `http://0.0.0.0:5000` by default.
+
+### 3. Use the CLI for Search
+
+You can also perform searches directly from your terminal using the `search_similar_images.py` script.
+
+```bash
+python search_similar_images.py --query_image /path/to/your/image.png --top_k 10
+```
+
+- `--query_image`: The path to the image you want to find similar images for.
+- `--top_k`: The number of similar images to return.
+
+The script will output a JSON object to the console containing the search results, in the same format as the `/api/search` endpoint.
 
 ## API Endpoints
 
-### POST /api/search
-Upload an image and find similar images.
+The Flask application (`app.py`) provides the following endpoints:
 
-**Request:**
-- Method: POST
-- Content-Type: multipart/form-data
-- Body:
-  - `image`: Image file (PNG, JPG, JPEG, GIF, BMP, TIFF, WEBP)
-  - `top_k`: Number of results to return (1-50, default: 10)
+### Health Check
 
-**Response:**
-```json
-{
-  "success": true,
-  "results": [
-    {
-      "rank": 1,
-      "filename": "Adelaide.png",
-      "relative_path": "Abstract/Adelaide.png",
-      "image_url": "/images/Abstract/Adelaide.png",
-      "similarity_score": 0.95,
-      "similarity_percentage": 95.0,
-      "file_size": 1234567
-    }
-  ],
-  "total_results": 10,
-  "query_processed": true,
-  "timestamp": "2025-10-12T10:30:45.123456"
-}
-```
+- **URL**: `/api/health`
+- **Method**: `GET`
+- **Description**: Checks the health of the API and confirms if the search functionality is ready.
+- **Success Response (200)**:
+  ```json
+  {
+    "status": "healthy",
+    "api_ready": true,
+    "timestamp": "2025-10-14T12:00:00.000Z"
+  }
+  ```
 
-### GET /api/health
-Check API status.
+### Get Index Statistics
 
-**Response:**
-```json
-{
-  "status": "healthy",
-  "api_ready": true,
-  "timestamp": "2025-10-12T10:30:45.123456"
-}
-```
-
-### GET /api/stats
-Get index statistics.
-
-**Response:**
-```json
-{
-  "success": true,
-  "stats": {
-    "total_images": 1500,
-    "index_info": {
-      "total_images": 1500,
-      "embedding_dimension": 960,
-      "model": "MobileNetV3-Large"
+- **URL**: `/api/stats`
+- **Method**: `GET`
+- **Description**: Returns statistics about the loaded image index.
+- **Success Response (200)**:
+  ```json
+  {
+    "success": true,
+    "stats": {
+      "total_images": 12345,
+      "index_info": {
+        "model_name": "mobilenet_v3_large",
+        "embedding_dim": 960,
+        "total_images": 12345,
+        "timestamp": "2025-10-14T10:00:00.000Z"
+      }
     }
   }
-}
-```
+  ```
 
-### GET /images/<path>
-Serve images from the dataset.
+### Search for Similar Images
 
-**Example:** `http://localhost:5000/images/Abstract/Adelaide.png`
-
-## Usage Examples
-
-### JavaScript/Frontend
-```javascript
-const formData = new FormData();
-formData.append('image', fileInput.files[0]);
-formData.append('top_k', 5);
-
-fetch('http://localhost:5000/api/search', {
-  method: 'POST',
-  body: formData
-})
-.then(response => response.json())
-.then(data => {
-  if (data.success) {
-    data.results.forEach(result => {
-      console.log(`${result.rank}. ${result.filename} (${result.similarity_percentage}%)`);
-      // Display image: data.image_url
-    });
+- **URL**: `/api/search`
+- **Method**: `POST`
+- **Description**: Upload an image to find the most similar images from the indexed collection.
+- **Form Data**:
+  - `image`: The image file to query.
+  - `top_k` (optional): The number of results to return (default: 10, max: 50).
+- **Success Response (200)**:
+  ```json
+  {
+    "success": true,
+    "results": [
+      {
+        "fullPath": "Abstract/Adelaide.png",
+        "id": "a1b2c3d4-e5f6-g7h8-i9j0-k1l2m3n4o5p6",
+        "location": "Abstract",
+        "name": "Adelaide",
+        "type": "file"
+      }
+    ],
+    "total_results": 1,
+    "query_processed": true,
+    "timestamp": "2025-10-14T12:05:00.000Z"
   }
-});
-```
-
-### cURL
-```bash
-curl -X POST http://localhost:5000/api/search \
-  -F "image=@query_image.jpg" \
-  -F "top_k=5"
-```
-
-### Python
-```python
-import requests
-
-with open('query_image.jpg', 'rb') as f:
-    files = {'image': f}
-    data = {'top_k': 5}
-    response = requests.post('http://localhost:5000/api/search', 
-                           files=files, data=data)
-    result = response.json()
-    
-if result['success']:
-    for item in result['results']:
-        print(f"{item['rank']}. {item['filename']} ({item['similarity_percentage']}%)")
-```
-
-## Configuration
-
-- **MAX_FILE_SIZE**: 16MB upload limit
-- **ALLOWED_EXTENSIONS**: PNG, JPG, JPEG, GIF, BMP, TIFF, WEBP
-- **Host**: 0.0.0.0 (accessible from network)
-- **Port**: 5000
-
-## File Structure
-```
-ImageSearch/
-├── app.py                 # Flask API
-├── generate_embeddings.py # Generate embeddings script
-├── search_similar_images.py # CLI search script
-├── requirements.txt       # Dependencies
-├── AOF/                  # Image dataset
-├── my_embeddings/        # FAISS index and metadata
-└── uploads/             # Temporary upload folder (auto-created)
-```
-
-## Error Handling
-
-The API returns appropriate HTTP status codes:
-- 200: Success
-- 400: Bad request (invalid file, missing parameters)
-- 413: File too large
-- 500: Server error
-
-All error responses include a JSON object with `success: false` and an `error` message.
+  ```
+- **Error Response (400, 500)**:
+  ```json
+  {
+    "success": false,
+    "error": "Error message describing the issue."
+  }
+  ```
