@@ -100,13 +100,15 @@ class ImageSearch:
             for i, (idx, distance) in enumerate(zip(indices[0], distances[0])):
                 if idx < len(self.metadata):
                     metadata = self.metadata[idx]
-                    
-                    relative_path = self.get_relative_path(metadata.get("image_path", ""))
-                    
-                    path_obj = Path(relative_path.replace('\\', '/'))
+                    # Use relative_path from metadata (already calculated during embedding generation)
+                    relative_path = metadata.get("relative_path", metadata.get("image_path", ""))
+
+                    # Normalize to forward slashes
+                    relative_path = relative_path.replace('\\', '/')
+                    path_obj = Path(relative_path)
                     parent_path = str(path_obj.parent)
                     location = parent_path.replace('\\', '/') if parent_path != '.' else ""
-                    
+
                     result = {
                         "fullPath": relative_path,
                         "id": str(uuid.uuid4()),
@@ -145,14 +147,20 @@ def main():
     parser.add_argument(
         '--embeddings_dir',
         type=str,
-        default="my_embeddings",
-        help='Directory containing the FAISS index and metadata.'
+        default=None,
+        help='Directory containing the FAISS index and metadata. If not specified, will use embeddings/{company}'
+    )
+    parser.add_argument(
+        '--company',
+        type=str,
+        default=None,
+        help='Company name (used to auto-locate embeddings directory as embeddings/{company})'
     )
     parser.add_argument(
         '--images_base_dir',
         type=str,
-        default="AOF",
-        help='Base directory of the image collection.'
+        default=None,
+        help='Base directory of the image collection. Defaults to embeddings directory.'
     )
     parser.add_argument(
         '--top_k',
@@ -160,15 +168,34 @@ def main():
         default=10,
         help='Number of similar images to find.'
     )
-    
+
     args = parser.parse_args()
-    
+
+    # Determine embeddings directory
+    if args.embeddings_dir:
+        embeddings_dir = args.embeddings_dir
+    elif args.company:
+        embeddings_dir = f'./embeddings/{args.company}'
+    else:
+        print("Error: Either --embeddings_dir or --company must be specified", file=sys.stderr)
+        print("Examples:", file=sys.stderr)
+        print("  python search_similar_images.py --query_image test.jpg --company AOF", file=sys.stderr)
+        print("  python search_similar_images.py --query_image test.jpg --embeddings_dir ./my_embeddings", file=sys.stderr)
+        sys.exit(1)
+
+    # Default images_base_dir to embeddings_dir if not specified
+    images_base_dir = args.images_base_dir if args.images_base_dir else embeddings_dir
+
     try:
-        searcher = ImageSearch(args.embeddings_dir, args.images_base_dir)
+        searcher = ImageSearch(embeddings_dir, images_base_dir)
         results = searcher.search(args.query_image, top_k=args.top_k)
-        
+
+        # Add company field if company was specified
+        if args.company and results.get('success'):
+            results['company'] = args.company
+
         print(json.dumps(results, indent=2))
-        
+
     except FileNotFoundError as e:
         error_response = {
             "success": False,

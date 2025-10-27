@@ -223,8 +223,14 @@ def main():
     parser.add_argument(
         '--output_dir',
         type=str,
-        default='./embeddings',
-        help='Output directory for embeddings and FAISS index (default: ./embeddings)'
+        default=None,
+        help='Output directory for embeddings and FAISS index. If not specified, will use embeddings/{company}'
+    )
+    parser.add_argument(
+        '--company',
+        type=str,
+        default=None,
+        help='Company name (used to auto-generate output directory as embeddings/{company})'
     )
     parser.add_argument(
         '--batch_size',
@@ -232,24 +238,38 @@ def main():
         default=32,
         help='Batch size for processing (default: 32)'
     )
-    
+
     args = parser.parse_args()
-    
+
+    # Determine output directory
+    if args.output_dir:
+        output_dir = args.output_dir
+    elif args.company:
+        output_dir = f'./embeddings/{args.company}'
+    else:
+        print("Error: Either --output_dir or --company must be specified")
+        print("Examples:")
+        print("  python generate_embeddings.py --input_dir ./images/AOF --company AOF")
+        print("  python generate_embeddings.py --input_dir ./images/CompanyB --company CompanyB")
+        return
+
     print("="*60)
     print("IMAGE EMBEDDING GENERATION")
     print("="*60)
     print(f"Input directory: {args.input_dir}")
-    print(f"Output directory: {args.output_dir}")
+    print(f"Output directory: {output_dir}")
+    if args.company:
+        print(f"Company: {args.company}")
     print(f"Model: MobileNetV3-Large")
     print("="*60)
-    
+
     # Check if input directory exists
     if not Path(args.input_dir).exists():
         print(f"Error: Input directory does not exist: {args.input_dir}")
         return
-    
+
     # Generate embeddings
-    generate_embeddings(args.input_dir, args.output_dir, args.batch_size)
+    generate_embeddings(args.input_dir, output_dir, args.batch_size)
 
 if __name__ == "__main__":
     main()
