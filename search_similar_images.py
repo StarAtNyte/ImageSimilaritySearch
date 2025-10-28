@@ -92,46 +92,76 @@ class ImageSearch:
                     "results": [],
                     "total_results": 0
                 }
-            
+
             query_embedding = query_embedding.reshape(1, -1).astype('float32')
-            distances, indices = self.index.search(query_embedding, top_k)
-            
+
+            # Request more results to account for duplicates we'll filter
+            search_k = min(top_k * 3, len(self.metadata))
+            distances, indices = self.index.search(query_embedding, search_k)
+
             results = []
+            seen_filenames = set()  # Track seen filenames for deduplication
+
             for i, (idx, distance) in enumerate(zip(indices[0], distances[0])):
+                if len(results) >= top_k:
+                    break
+
                 if idx < len(self.metadata):
                     metadata = self.metadata[idx]
-                    # Use relative_path from metadata (already calculated during embedding generation)
-                    relative_path = metadata.get("relative_path", metadata.get("image_path", ""))
 
-                    # Normalize to forward slashes
-                    relative_path = relative_path.replace('\\', '/')
-                    path_obj = Path(relative_path)
+                    # Get relative path for response
+                    relative_path = metadata.get("relative_path", metadata.get("image_path", ""))
+                    # Normalize Windows backslashes to forward slashes for cross-platform compatibility
+                    relative_path_normalized = relative_path.replace('\\', '/')
+                    path_obj = Path(relative_path_normalized)
+
+                    # Extract filename (without extension) for deduplication
+                    filename_no_ext = path_obj.stem.lower()  # Case-insensitive comparison
+
+                    # Skip if we've already seen this filename
+                    if filename_no_ext in seen_filenames:
+                        continue
+
+                    # Track this filename
+                    seen_filenames.add(filename_no_ext)
+
                     parent_path = str(path_obj.parent)
-                    location = parent_path.replace('\\', '/') if parent_path != '.' else ""
+                    # Ensure location uses forward slashes
+                    location = parent_path if parent_path != '.' else ""
+
+                    # Calculate similarity score (0-100 scale)
+                    # IndexFlatIP returns inner product (cosine similarity for normalized vectors)
+                    # Range is [-1, 1], convert to [0, 100]
+                    similarity_score = float((distance + 1) * 50)  # Convert [-1,1] to [0,100]
+                    similarity_score = min(100.0, max(0.0, similarity_score))  # Clamp to [0,100]
 
                     result = {
-                        "fullPath": relative_path,
+                        "fullPath": relative_path_normalized,
                         "id": str(uuid.uuid4()),
                         "location": location,
                         "name": path_obj.stem,
-                        "type": "file"
+                        "type": "file",
+                        "similarity": round(similarity_score, 2),
+                        "distance": float(distance)  # Raw distance for debugging
                     }
                     results.append(result)
-            
+
             return {
                 "success": True,
                 "results": results,
                 "total_results": len(results),
                 "query_processed": True,
+                "request_id": str(uuid.uuid4()),  # Unique request ID
                 "timestamp": datetime.now().isoformat()
             }
-            
+
         except Exception as e:
             return {
                 "success": False,
                 "error": str(e),
                 "results": [],
-                "total_results": 0
+                "total_results": 0,
+                "query_processed": False
             }
 
 def main():

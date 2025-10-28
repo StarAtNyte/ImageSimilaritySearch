@@ -7,7 +7,6 @@ import json
 from datetime import datetime
 import threading
 import logging
-
 import torch
 import torchvision.models as models
 from torchvision import transforms
@@ -116,13 +115,18 @@ class ImageSearchAPI:
     def compute_image_hash(self, image_path):
         """Compute perceptual hash of an image for duplicate detection."""
         try:
+            if not os.path.exists(image_path):
+                logger.error(f"Image file does not exist: {image_path}")
+                return None
+                
             image = Image.open(image_path)
-            # Use average hash for duplicate detection (fast and effective)
-            return str(imagehash.average_hash(image, hash_size=16))
+            hash_val = str(imagehash.average_hash(image, hash_size=16))
+            logger.debug(f"Computed hash {hash_val} for {image_path}")
+            return hash_val
         except Exception as e:
             logger.error(f"Error computing hash for {image_path}: {e}")
             return None
-    
+            
     def search(self, query_image_path, top_k=10):
         try:
             query_embedding = self.extract_embedding(query_image_path)
@@ -137,14 +141,11 @@ class ImageSearchAPI:
             query_embedding = query_embedding.reshape(1, -1).astype('float32')
 
             # Request more results to account for duplicates we'll filter
-            search_k = min(top_k * 5, len(self.metadata))
+            search_k = min(top_k * 3, len(self.metadata))
             distances, indices = self.index.search(query_embedding, search_k)
 
-            # Compute query image hash for deduplication
-            query_hash = self.compute_image_hash(query_image_path)
-
             results = []
-            seen_hashes = set()
+            seen_filenames = set() 
 
             for i, (idx, distance) in enumerate(zip(indices[0], distances[0])):
                 if len(results) >= top_k:
@@ -152,26 +153,27 @@ class ImageSearchAPI:
 
                 if idx < len(self.metadata):
                     metadata = self.metadata[idx]
-                    # Use relative_path from metadata (already calculated during embedding generation)
+
+                    # Get relative path for response
                     relative_path = metadata.get("relative_path", metadata.get("image_path", ""))
+                    # Normalize Windows backslashes to forward slashes for cross-platform compatibility
+                    relative_path_normalized = relative_path.replace('\\', '/')
+                    path_obj = Path(relative_path_normalized)
 
-                    # Compute image hash for deduplication
-                    image_path = metadata.get("image_path", "")
-                    img_hash = self.compute_image_hash(image_path)
+                    # Extract filename (without extension) for deduplication
+                    filename_no_ext = path_obj.stem.lower()  # Case-insensitive comparison
 
-                    # Skip if we've already seen this image (duplicate)
-                    if img_hash and img_hash in seen_hashes:
+                    # Skip if we've already seen this filename
+                    if filename_no_ext in seen_filenames:
+                        logger.debug(f"Skipping duplicate filename: {path_obj.name} at {relative_path}")
                         continue
 
-                    if img_hash:
-                        seen_hashes.add(img_hash)
+                    # Track this filename
+                    seen_filenames.add(filename_no_ext)
 
-                    # Normalize to forward slashes
-                    relative_path = relative_path.replace('\\', '/')
-                    path_obj = Path(relative_path)
                     parent_path = str(path_obj.parent)
                     # Ensure location uses forward slashes
-                    location = parent_path.replace('\\', '/') if parent_path != '.' else ""
+                    location = parent_path if parent_path != '.' else ""
 
                     # Calculate similarity score (0-100 scale)
                     # IndexFlatIP returns inner product (cosine similarity for normalized vectors)
@@ -180,7 +182,7 @@ class ImageSearchAPI:
                     similarity_score = min(100.0, max(0.0, similarity_score))  # Clamp to [0,100]
 
                     result = {
-                        "fullPath": relative_path,
+                        "fullPath": relative_path_normalized,
                         "id": str(uuid.uuid4()),
                         "location": location,
                         "name": path_obj.stem,
@@ -190,13 +192,12 @@ class ImageSearchAPI:
                     }
 
                     results.append(result)
-            
+
             return {
                 "success": True,
                 "results": results,
                 "total_results": len(results),
                 "query_processed": True,
-                "query_hash": query_hash,  # For debugging
                 "request_id": str(uuid.uuid4()),  # Unique request ID
                 "timestamp": datetime.now().isoformat()
             }
