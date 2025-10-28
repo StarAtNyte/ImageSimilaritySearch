@@ -14,6 +14,7 @@ from torchvision import transforms
 from PIL import Image
 import numpy as np
 import faiss
+import imagehash
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -21,12 +22,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {
+    "origins": "*",
+    "methods": ["GET", "POST"],
+    "allow_headers": ["Content-Type"],
+    "expose_headers": ["Cache-Control", "Pragma", "Expires"]
+}})
 
 # Configuration
 UPLOAD_FOLDER = 'uploads'
-EMBEDDINGS_BASE_DIR = 'embeddings'  
-MAX_FILE_SIZE = 16 * 1024 * 1024
+EMBEDDINGS_BASE_DIR = 'embeddings'
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+MAX_IMAGE_DIMENSION = 10000  # Max width or height in pixels
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'tif', 'webp'}
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -60,22 +67,39 @@ class ImageSearchAPI:
         else:
             self.index_info = {}
     
+    def validate_image_dimensions(self, image_path):
+        """Validate image dimensions are within acceptable limits."""
+        try:
+            with Image.open(image_path) as img:
+                width, height = img.size
+                if width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION:
+                    return False, f"Image dimensions too large ({width}x{height}). Max: {MAX_IMAGE_DIMENSION}px"
+                return True, None
+        except Exception as e:
+            return False, f"Error validating image: {str(e)}"
+
     def extract_embedding(self, image_path):
         try:
+            # Validate dimensions
+            valid, error = self.validate_image_dimensions(image_path)
+            if not valid:
+                logger.warning(error)
+                # Continue anyway but log the warning
+
             image = Image.open(image_path).convert('RGB')
             image_tensor = self.transform(image).unsqueeze(0)
-            
+
             with torch.no_grad():
                 features = self.model(image_tensor)
                 features = features.squeeze()
-            
+
             embedding = features.cpu().numpy()
-            
+
             # L2 normalization
             norm = np.linalg.norm(embedding)
             if norm > 0:
                 embedding = embedding / norm
-            
+
             return embedding
         except Exception as e:
             print(f"Error extracting embedding: {e}")
@@ -88,6 +112,16 @@ class ImageSearchAPI:
             return relative.replace('\\', '/')
         except ValueError:
             return abs_path.name
+
+    def compute_image_hash(self, image_path):
+        """Compute perceptual hash of an image for duplicate detection."""
+        try:
+            image = Image.open(image_path)
+            # Use average hash for duplicate detection (fast and effective)
+            return str(imagehash.average_hash(image, hash_size=16))
+        except Exception as e:
+            logger.error(f"Error computing hash for {image_path}: {e}")
+            return None
     
     def search(self, query_image_path, top_k=10):
         try:
@@ -99,16 +133,38 @@ class ImageSearchAPI:
                     "results": [],
                     "total_results": 0
                 }
-            
+
             query_embedding = query_embedding.reshape(1, -1).astype('float32')
-            distances, indices = self.index.search(query_embedding, top_k)
-            
+
+            # Request more results to account for duplicates we'll filter
+            search_k = min(top_k * 5, len(self.metadata))
+            distances, indices = self.index.search(query_embedding, search_k)
+
+            # Compute query image hash for deduplication
+            query_hash = self.compute_image_hash(query_image_path)
+
             results = []
+            seen_hashes = set()
+
             for i, (idx, distance) in enumerate(zip(indices[0], distances[0])):
+                if len(results) >= top_k:
+                    break
+
                 if idx < len(self.metadata):
                     metadata = self.metadata[idx]
                     # Use relative_path from metadata (already calculated during embedding generation)
                     relative_path = metadata.get("relative_path", metadata.get("image_path", ""))
+
+                    # Compute image hash for deduplication
+                    image_path = metadata.get("image_path", "")
+                    img_hash = self.compute_image_hash(image_path)
+
+                    # Skip if we've already seen this image (duplicate)
+                    if img_hash and img_hash in seen_hashes:
+                        continue
+
+                    if img_hash:
+                        seen_hashes.add(img_hash)
 
                     # Normalize to forward slashes
                     relative_path = relative_path.replace('\\', '/')
@@ -117,13 +173,22 @@ class ImageSearchAPI:
                     # Ensure location uses forward slashes
                     location = parent_path.replace('\\', '/') if parent_path != '.' else ""
 
+                    # Calculate similarity score (0-100 scale)
+                    # IndexFlatIP returns inner product (cosine similarity for normalized vectors)
+                    # Range is [-1, 1], convert to [0, 100]
+                    similarity_score = float((distance + 1) * 50)  # Convert [-1,1] to [0,100]
+                    similarity_score = min(100.0, max(0.0, similarity_score))  # Clamp to [0,100]
+
                     result = {
                         "fullPath": relative_path,
                         "id": str(uuid.uuid4()),
                         "location": location,
                         "name": path_obj.stem,
-                        "type": "file"
+                        "type": "file",
+                        "similarity": round(similarity_score, 2),
+                        "distance": float(distance)  # Raw distance for debugging
                     }
+
                     results.append(result)
             
             return {
@@ -131,6 +196,8 @@ class ImageSearchAPI:
                 "results": results,
                 "total_results": len(results),
                 "query_processed": True,
+                "query_hash": query_hash,  # For debugging
+                "request_id": str(uuid.uuid4()),  # Unique request ID
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -332,6 +399,8 @@ def search_similar_images(company_name):
             "error": "CompanyManager not initialized"
         }), 500
 
+    logger.info(f"=== NEW SEARCH REQUEST for {company_name} ===")
+
     # Get company API instance
     search_api, error = company_manager.get_company_api(company_name)
     if error:
@@ -402,7 +471,14 @@ def search_similar_images(company_name):
         except:
             pass
 
-        return jsonify(results)
+        logger.info(f"Returning {len(results.get('results', []))} results with timestamp {results.get('timestamp')}")
+
+        # Create response with no-cache headers
+        response = jsonify(results)
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
 
     except Exception as e:
         # Clean up file if error occurs

@@ -6,3 +6,4 @@ faiss-cpu>=1.7.4
 tqdm>=4.65.0
 flask>=2.3.0
 flask-cors>=4.0.0
+imagehash>=4.3.1
